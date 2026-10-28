@@ -115,6 +115,7 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
 .chart-row .bar-bg{background:var(--bg);border-radius:999px;height:8px;overflow:hidden;}
 .chart-row .bar-fill{height:100%;border-radius:999px;background:var(--primary);}
 .empty-msg{color:var(--text-secondary);font-size:.88rem;text-align:center;padding:18px 0;}
+.ciclo-rango{font-size:.78rem;color:var(--text-secondary);margin:-10px 0 12px;}
 
 /* ---- Pantalla cuenta ---- */
 .saldo-header{background:var(--card-bg);border-radius:22px;padding:24px 20px;text-align:center;box-shadow:var(--shadow);margin-bottom:16px;}
@@ -183,6 +184,12 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
   margin-bottom:18px;font-size:.84rem;line-height:1.5;color:var(--text);
 }
 .aviso-banner strong{color:var(--red);}
+
+.settings-card{background:var(--card-bg);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow);}
+.settings-card .titulo{font-weight:700;font-size:.95rem;margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+.settings-card .fila{display:flex;gap:10px;}
+.settings-card .fila input{flex:1;min-width:0;padding:13px;border:1.5px solid var(--border);border-radius:12px;background:var(--bg);color:var(--text);font-size:1rem;}
+.settings-card .fila button{padding:0 18px;border:none;border-radius:12px;background:var(--primary);color:#fff;font-weight:700;font-size:.9rem;}
 
 /* ---- Bottom nav ---- */
 .bottom-nav{
@@ -275,7 +282,8 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
 
     <button class="btn-transferir" onclick="abrirSheetTransferencia()">🔁 Transferir entre cuentas</button>
 
-    <div class="sub-title">Resumen de este mes</div>
+    <div class="sub-title">Resumen de este ciclo</div>
+    <div class="ciclo-rango" id="ciclo-rango"></div>
     <div class="resumen-grid">
       <div class="resumen-box ingresos">
         <div class="label">Ingresado</div>
@@ -286,7 +294,7 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
         <div class="valor" id="resumen-gastos">0,00 €</div>
       </div>
       <div class="resumen-box fijos full">
-        <div class="label">Gastos fijos este mes</div>
+        <div class="label">Gastos fijos este ciclo</div>
         <div class="valor" id="resumen-fijos">0,00 €</div>
       </div>
     </div>
@@ -322,6 +330,15 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
     <h1 class="page-title">⚙️ Ajustes</h1>
 
     <div id="avisoArchivoLocal" class="hidden"></div>
+
+    <div class="settings-card">
+      <div class="titulo">📅 Día de inicio de ciclo</div>
+      <div class="fila">
+        <input type="number" id="inputCicloDia" min="1" max="31" value="1">
+        <button type="button" onclick="guardarCicloDia()">Guardar</button>
+      </div>
+      <div class="settings-note" id="cicloDiaInfo" style="margin:10px 0 0;"></div>
+    </div>
 
     <button class="settings-btn" onclick="exportarBackup()">💾 Exportar copia de seguridad <span class="chev">›</span></button>
     <div class="settings-note">Descarga un archivo con todos tus datos. Guárdalo en un sitio seguro.</div>
@@ -502,6 +519,41 @@ function scheduledDate(ym, dia){
 }
 function nombreCuenta(cuenta){ return cuenta === 'corriente' ? 'Cuenta Corriente' : 'Cuenta de Ahorro'; }
 
+/* ---- Ciclo personalizado (p.ej. fecha de nómina, no siempre el día 1) ---- */
+function getCicloDia(){ return (state && state.cicloDia) ? state.cicloDia : 1; }
+
+function diaCicloClamp(year, month1a12, dia){ return Math.min(dia, daysInMonth(year, month1a12)); }
+
+function inicioCicloParaFecha(fecha, cicloDia){
+  const y = fecha.getFullYear(), m = fecha.getMonth() + 1;
+  const diaEsteMes = diaCicloClamp(y, m, cicloDia);
+  let inicio;
+  if(fecha.getDate() >= diaEsteMes){
+    inicio = new Date(y, m - 1, diaEsteMes);
+  } else {
+    let pm = m - 1, py = y;
+    if(pm < 1){ pm = 12; py -= 1; }
+    const diaMesAnterior = diaCicloClamp(py, pm, cicloDia);
+    inicio = new Date(py, pm - 1, diaMesAnterior);
+  }
+  inicio.setHours(0,0,0,0);
+  return inicio;
+}
+
+function obtenerCicloActual(){
+  const cicloDia = getCicloDia();
+  const inicio = inicioCicloParaFecha(todayDateObj(), cicloDia);
+  let ny = inicio.getFullYear(), nm = inicio.getMonth() + 2;
+  if(nm > 12){ nm = 1; ny += 1; }
+  const diaSiguiente = diaCicloClamp(ny, nm, cicloDia);
+  const siguienteInicio = new Date(ny, nm - 1, diaSiguiente);
+  const fin = new Date(siguienteInicio.getTime() - 24*60*60*1000);
+  fin.setHours(23,59,59,999);
+  return {inicio, fin};
+}
+
+function proximaFechaFijo(f){ return scheduledDate(addMonth(f.lastAppliedMonth), f.dia); }
+
 /* ============================================================
    ESTADO
    ============================================================ */
@@ -553,13 +605,13 @@ function procesarFijos(){
   return aplicado;
 }
 
-function gastosFijosPendientesMes(cuenta){
-  const ym = currentYM();
+function gastosFijosPendientesCiclo(cuenta){
+  const {fin} = obtenerCicloActual();
   let total = 0, count = 0;
   state.fijos.forEach(f => {
     if(f.cuenta !== cuenta) return;
     if(f.importe >= 0) return;
-    if(f.lastAppliedMonth < ym){
+    if(proximaFechaFijo(f) <= fin){
       total += Math.abs(f.importe);
       count++;
     }
@@ -567,14 +619,15 @@ function gastosFijosPendientesMes(cuenta){
   return {total, count};
 }
 
-function totalGastosFijosMes(){
-  const ym = currentYM();
+function totalGastosFijosCiclo(){
+  const {inicio, fin} = obtenerCicloActual();
+  const inicioISO = formatDateISO(inicio), finISO = formatDateISO(fin);
   let total = 0;
   state.fijos.forEach(f => {
     if(f.importe >= 0) return;
-    const pendiente = f.lastAppliedMonth < ym;
-    const yaAplicadoEsteMes = state.movimientos.some(m => m.fijoId === f.id && m.fecha.startsWith(ym));
-    if(pendiente || yaAplicadoEsteMes){
+    const pendiente = proximaFechaFijo(f) <= fin;
+    const yaAplicadoEsteCiclo = state.movimientos.some(m => m.fijoId === f.id && m.fecha >= inicioISO && m.fecha <= finISO);
+    if(pendiente || yaAplicadoEsteCiclo){
       total += Math.abs(f.importe);
     }
   });
@@ -611,6 +664,7 @@ function render(){
   } else if(currentScreen === 'ajustes'){
     document.getElementById('screen-ajustes').classList.add('active');
     renderAvisoArchivoLocal();
+    renderInfoCiclo();
   }
   renderNav();
 }
@@ -627,30 +681,33 @@ function renderNav(){
 function renderInicio(){
   const corr = state.accounts.corriente;
   const ahor = state.accounts.ahorro;
-  const pendCorr = gastosFijosPendientesMes('corriente');
-  const pendAhor = gastosFijosPendientesMes('ahorro');
+  const pendCorr = gastosFijosPendientesCiclo('corriente');
+  const pendAhor = gastosFijosPendientesCiclo('ahorro');
 
   document.getElementById('home-corriente-disponible').textContent = formatCurrency(corr.saldo - pendCorr.total);
   document.getElementById('home-corriente-real').textContent = 'Saldo real: ' + formatCurrency(corr.saldo);
   document.getElementById('home-corriente-pendiente').innerHTML = pendCorr.count > 0
-    ? `<div class="pendiente-line">Pendiente este mes: ${formatCurrency(pendCorr.total)} en ${pendCorr.count} gasto${pendCorr.count>1?'s':''} fijo${pendCorr.count>1?'s':''}</div>`
+    ? `<div class="pendiente-line">Pendiente este ciclo: ${formatCurrency(pendCorr.total)} en ${pendCorr.count} gasto${pendCorr.count>1?'s':''} fijo${pendCorr.count>1?'s':''}</div>`
     : '';
 
   document.getElementById('home-ahorro-disponible').textContent = formatCurrency(ahor.saldo - pendAhor.total);
   document.getElementById('home-ahorro-real').textContent = 'Saldo real: ' + formatCurrency(ahor.saldo);
   document.getElementById('home-ahorro-pendiente').innerHTML = pendAhor.count > 0
-    ? `<div class="pendiente-line">Pendiente este mes: ${formatCurrency(pendAhor.total)} en ${pendAhor.count} gasto${pendAhor.count>1?'s':''} fijo${pendAhor.count>1?'s':''}</div>`
+    ? `<div class="pendiente-line">Pendiente este ciclo: ${formatCurrency(pendAhor.total)} en ${pendAhor.count} gasto${pendAhor.count>1?'s':''} fijo${pendAhor.count>1?'s':''}</div>`
     : '';
 
-  const stats = getMonthStats();
+  const {inicio: inicioCiclo, fin: finCiclo} = obtenerCicloActual();
+  document.getElementById('ciclo-rango').textContent = `Del ${formatFecha(formatDateISO(inicioCiclo))} al ${formatFecha(formatDateISO(finCiclo))}`;
+
+  const stats = getCycleStats();
   document.getElementById('resumen-ingresos').textContent = formatCurrency(stats.ingresos);
   document.getElementById('resumen-gastos').textContent = formatCurrency(stats.gastos);
-  document.getElementById('resumen-fijos').textContent = formatCurrency(totalGastosFijosMes());
+  document.getElementById('resumen-fijos').textContent = formatCurrency(totalGastosFijosCiclo());
 
   const chartEl = document.getElementById('chart-categorias');
   const entries = Object.entries(stats.porCategoria).sort((a,b) => b[1] - a[1]);
   if(entries.length === 0){
-    chartEl.innerHTML = '<div class="empty-msg">Todavía no hay gastos este mes</div>';
+    chartEl.innerHTML = '<div class="empty-msg">Todavía no hay gastos en este ciclo</div>';
   } else {
     const max = entries[0][1];
     chartEl.innerHTML = entries.map(([cat, monto]) => `
@@ -665,13 +722,14 @@ function renderInicio(){
   }
 }
 
-function getMonthStats(){
-  const ym = currentYM();
+function getCycleStats(){
+  const {inicio, fin} = obtenerCicloActual();
+  const inicioISO = formatDateISO(inicio), finISO = formatDateISO(fin);
   let ingresos = 0, gastos = 0;
   const porCategoria = {};
   state.movimientos.forEach(m => {
     if(m.tipo === 'transferencia') return;
-    if(!m.fecha.startsWith(ym)) return;
+    if(m.fecha < inicioISO || m.fecha > finISO) return;
     if(m.importe > 0){
       ingresos += m.importe;
     } else {
@@ -720,7 +778,8 @@ function renderListaMovimientos(){
 
 function renderListaFijos(){
   const el = document.getElementById('contenido-fijos');
-  const ym = currentYM();
+  const {inicio, fin} = obtenerCicloActual();
+  const inicioISO = formatDateISO(inicio), finISO = formatDateISO(fin);
   const fijos = state.fijos
     .filter(f => f.cuenta === currentAccount)
     .sort((a,b) => a.dia - b.dia);
@@ -730,13 +789,13 @@ function renderListaFijos(){
     return;
   }
   el.innerHTML = fijos.map(f => {
-    const cobrado = f.lastAppliedMonth === ym;
+    const cobrado = state.movimientos.some(m => m.fijoId === f.id && m.fecha >= inicioISO && m.fecha <= finISO);
     return `
     <div class="fijo-item" onclick="abrirSheetEditarFijo('${f.id}')">
       <div class="dia-badge">${f.dia}<span>día</span></div>
       <div class="fijo-info">
         <div class="fijo-concepto">${iconoCategoria(f.categoria)} ${escapeHtml(f.concepto)}</div>
-        <div class="fijo-estado">${cobrado ? '✓ Cobrado este mes' : '⏳ Pendiente este mes'}</div>
+        <div class="fijo-estado">${cobrado ? '✓ Cobrado este ciclo' : '⏳ Pendiente este ciclo'}</div>
       </div>
       <div class="fijo-importe ${f.importe >= 0 ? 'pos' : 'neg'}">${f.importe >= 0 ? '+' : ''}${formatCurrency(f.importe)}</div>
     </div>
@@ -753,6 +812,23 @@ function renderAvisoArchivoLocal(){
     el.classList.add('hidden');
     el.innerHTML = '';
   }
+}
+
+function renderInfoCiclo(){
+  document.getElementById('inputCicloDia').value = getCicloDia();
+  const {inicio, fin} = obtenerCicloActual();
+  document.getElementById('cicloDiaInfo').textContent =
+    `Ciclo actual: del ${formatFecha(formatDateISO(inicio))} al ${formatFecha(formatDateISO(fin))}. ` +
+    `Útil si tu nómina no llega siempre el mismo día (por ejemplo a veces el 29, a veces el 1): elige aquí el día en que normalmente la recibes, y tus gastos fijos pendientes se restarán todos de golpe en cuanto empiece ese nuevo ciclo.`;
+}
+
+function guardarCicloDia(){
+  const val = parseInt(document.getElementById('inputCicloDia').value, 10);
+  if(!val || val < 1 || val > 31){ alert('Introduce un día válido entre 1 y 31'); return; }
+  state.cicloDia = val;
+  guardarEstado();
+  renderInfoCiclo();
+  alert(`Listo. A partir de ahora tu ciclo empieza el día ${val} de cada mes.`);
 }
 
 function escapeHtml(str){

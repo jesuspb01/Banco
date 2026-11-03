@@ -89,6 +89,12 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
   background:rgba(255,255,255,.18);padding:6px 11px;border-radius:999px;
 }
 
+.barra-semanal{margin-top:12px;}
+.barra-semanal-track{height:6px;border-radius:999px;background:rgba(255,255,255,.25);overflow:hidden;}
+.barra-semanal-fill{height:100%;width:0%;border-radius:999px;background:#ffffff;transition:width .3s ease;}
+.barra-semanal-fill.over{background:#ffd43b;}
+.barra-semanal-texto{font-size:.72rem;opacity:.85;margin-top:6px;}
+
 .btn-transferir{
   width:100%;display:flex;align-items:center;justify-content:center;gap:8px;
   background:var(--card-bg);color:var(--text);border:1px solid var(--border);
@@ -269,6 +275,10 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
       <div class="disponible-label">Disponible</div>
       <div class="disponible-valor" id="home-corriente-disponible">0,00 €</div>
       <div class="saldo-real" id="home-corriente-real">Saldo real: 0,00 €</div>
+      <div class="barra-semanal">
+        <div class="barra-semanal-track"><div class="barra-semanal-fill" id="barra-semanal-fill"></div></div>
+        <div class="barra-semanal-texto" id="barra-semanal-texto"></div>
+      </div>
       <div id="home-corriente-pendiente"></div>
     </div>
 
@@ -540,6 +550,15 @@ function inicioCicloParaFecha(fecha, cicloDia){
   return inicio;
 }
 
+function diferenciaDias(a, b){
+  const utcA = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate());
+  const utcB = Date.UTC(b.getFullYear(), b.getMonth(), b.getDate());
+  return Math.round((utcB - utcA) / 86400000);
+}
+function sumarDias(fecha, dias){
+  return new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate() + dias);
+}
+
 function obtenerCicloActual(){
   const cicloDia = getCicloDia();
   const inicio = inicioCicloParaFecha(todayDateObj(), cicloDia);
@@ -547,12 +566,67 @@ function obtenerCicloActual(){
   if(nm > 12){ nm = 1; ny += 1; }
   const diaSiguiente = diaCicloClamp(ny, nm, cicloDia);
   const siguienteInicio = new Date(ny, nm - 1, diaSiguiente);
-  const fin = new Date(siguienteInicio.getTime() - 24*60*60*1000);
+  const fin = sumarDias(siguienteInicio, -1);
   fin.setHours(23,59,59,999);
   return {inicio, fin};
 }
 
 function proximaFechaFijo(f){ return scheduledDate(addMonth(f.lastAppliedMonth), f.dia); }
+
+/* ---- Presupuesto semanal (reparte el Disponible de Corriente entre las semanas que quedan de ciclo) ---- */
+function obtenerSemanasCiclo(){
+  const {inicio, fin} = obtenerCicloActual();
+  const duracionDias = diferenciaDias(inicio, fin) + 1;
+  const numSemanas = Math.max(1, Math.round(duracionDias / 7));
+  const semanas = [];
+  for(let i = 0; i < numSemanas; i++){
+    const offsetInicio = Math.round(duracionDias * i / numSemanas);
+    const offsetFin = Math.round(duracionDias * (i + 1) / numSemanas) - 1;
+    const inicioSemana = sumarDias(inicio, offsetInicio);
+    const finSemana = sumarDias(inicio, offsetFin);
+    finSemana.setHours(23,59,59,999);
+    semanas.push({inicio: inicioSemana, fin: finSemana});
+  }
+  return semanas;
+}
+
+function obtenerPresupuestoSemanal(){
+  const semanas = obtenerSemanasCiclo();
+  const hoy = todayDateObj();
+  let idx = semanas.findIndex(s => hoy >= s.inicio && hoy <= s.fin);
+  if(idx === -1) idx = semanas.length - 1;
+  const semanaActual = semanas[idx];
+  const semanasRestantes = semanas.length - idx;
+
+  const inicioSemanaISO = formatDateISO(semanaActual.inicio);
+  const hoyISO = todayISO();
+
+  // Solo gastos puntuales de Corriente cuentan como "gastado esta semana".
+  // Los fijos ya estaban restados desde el inicio del ciclo y las transferencias se reparten aparte.
+  let gastadoEstaSemana = 0;
+  state.movimientos.forEach(m => {
+    if(m.cuenta !== 'corriente') return;
+    if(m.tipo !== 'puntual') return;
+    if(m.importe >= 0) return;
+    if(m.fecha < inicioSemanaISO || m.fecha > hoyISO) return;
+    gastadoEstaSemana += Math.abs(m.importe);
+  });
+
+  const pendCorr = gastosFijosPendientesCiclo('corriente');
+  const disponibleHoy = state.accounts.corriente.saldo - pendCorr.total;
+  // Se "devuelve" lo gastado puntual de esta semana al reparto: así una transferencia
+  // reduce el bote y se reparte entre las semanas que quedan, pero un gasto puntual
+  // solo rellena la barra de esta semana, sin encoger el presupuesto de las demás.
+  const bote = disponibleHoy + gastadoEstaSemana;
+  const presupuesto = bote / semanasRestantes;
+
+  return {
+    presupuesto,
+    gastado: gastadoEstaSemana,
+    restante: presupuesto - gastadoEstaSemana,
+    finSemana: semanaActual.fin
+  };
+}
 
 /* ============================================================
    ESTADO
@@ -678,6 +752,20 @@ function renderNav(){
   else if(currentScreen === 'cuenta') document.getElementById('nav-' + currentAccount).classList.add('active');
 }
 
+function renderBarraSemanal(){
+  const {presupuesto, gastado, restante, finSemana} = obtenerPresupuestoSemanal();
+  const pct = presupuesto > 0 ? Math.min(100, Math.max(0, (gastado / presupuesto) * 100)) : 100;
+  const fill = document.getElementById('barra-semanal-fill');
+  fill.style.width = pct + '%';
+  fill.classList.toggle('over', restante < 0);
+
+  const fechaTxt = finSemana.toLocaleDateString('es-ES', {weekday:'long', day:'numeric', month:'short'});
+  const texto = restante >= 0
+    ? `Puedes gastar ${formatCurrency(restante)} más hasta el ${fechaTxt}`
+    : `Te has pasado ${formatCurrency(Math.abs(restante))} del margen hasta el ${fechaTxt}`;
+  document.getElementById('barra-semanal-texto').textContent = texto;
+}
+
 function renderInicio(){
   const corr = state.accounts.corriente;
   const ahor = state.accounts.ahorro;
@@ -686,6 +774,7 @@ function renderInicio(){
 
   document.getElementById('home-corriente-disponible').textContent = formatCurrency(corr.saldo - pendCorr.total);
   document.getElementById('home-corriente-real').textContent = 'Saldo real: ' + formatCurrency(corr.saldo);
+  renderBarraSemanal();
   document.getElementById('home-corriente-pendiente').innerHTML = pendCorr.count > 0
     ? `<div class="pendiente-line">Pendiente este ciclo: ${formatCurrency(pendCorr.total)} en ${pendCorr.count} gasto${pendCorr.count>1?'s':''} fijo${pendCorr.count>1?'s':''}</div>`
     : '';

@@ -88,6 +88,9 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
   display:inline-block;margin-top:12px;font-size:.76rem;font-weight:600;
   background:rgba(255,255,255,.18);padding:6px 11px;border-radius:999px;
 }
+.card-cuenta .pendiente-line.vencido-aviso{
+  display:block;margin-top:8px;background:rgba(255,196,0,.35);
+}
 
 .barra-semanal{margin-top:12px;}
 .barra-semanal-track{height:6px;border-radius:999px;background:rgba(255,255,255,.25);overflow:hidden;}
@@ -172,9 +175,15 @@ h1.page-title{font-size:1.5rem;margin:4px 0 16px;font-weight:800;}
 .fijo-item .fijo-info{flex:1;min-width:0;}
 .fijo-item .fijo-concepto{font-weight:700;font-size:.95rem;}
 .fijo-item .fijo-estado{font-size:.76rem;color:var(--text-secondary);margin-top:2px;}
+.fijo-item .fijo-estado.vencido{color:#c77700;font-weight:600;}
 .fijo-item .fijo-importe{font-weight:800;font-size:.95rem;text-align:right;flex-shrink:0;}
 .fijo-item .fijo-importe.pos{color:var(--green);}
 .fijo-item .fijo-importe.neg{color:var(--red);}
+.fijo-item-vencido{border:1.5px solid #f0ad4e;}
+.btn-confirmar-fijo{
+  margin-top:8px;padding:9px 14px;border:none;border-radius:10px;background:#f0ad4e;color:#1a1d23;
+  font-weight:700;font-size:.78rem;
+}
 
 /* ---- Ajustes ---- */
 .settings-btn{
@@ -498,7 +507,19 @@ function uid(){ return Date.now().toString(36) + Math.random().toString(36).slic
 
 function parseAmount(str){
   if(!str) return NaN;
-  const n = parseFloat(String(str).replace(/\./g,'').replace(',', '.').replace(/[^\d.-]/g,''));
+  let s = String(str).replace(/[^\d.,-]/g, '');
+  if(!s) return NaN;
+  const lastComma = s.lastIndexOf(',');
+  const lastDot = s.lastIndexOf('.');
+  if(lastComma !== -1 && lastDot !== -1){
+    // Hay punto y coma: el que aparece el ultimo es el separador decimal.
+    s = lastComma > lastDot ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+  } else if(lastComma !== -1){
+    // Solo coma: formato español, es el separador decimal.
+    s = s.replace(',', '.');
+  }
+  // Solo punto (o ninguno): ya es un decimal válido tal cual (ej. "9.99").
+  const n = parseFloat(s);
   if(isNaN(n)) return NaN;
   return Math.round(n * 100) / 100;
 }
@@ -643,40 +664,50 @@ function guardarEstado(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state
 /* ============================================================
    LOGICA DE GASTOS/INGRESOS FIJOS
    ============================================================ */
-function procesarFijos(){
-  if(!state) return false;
-  const today = todayDateObj();
-  let aplicado = false;
-  state.fijos.forEach(fijo => {
-    if(!fijo.lastAppliedMonth) return;
-    let siguienteYm = addMonth(fijo.lastAppliedMonth);
-    let guard = 0;
-    while(guard < 1200){
-      const fechaProgramada = scheduledDate(siguienteYm, fijo.dia);
-      if(fechaProgramada <= today){
-        state.accounts[fijo.cuenta].saldo += fijo.importe;
-        state.movimientos.push({
-          id: uid(),
-          cuenta: fijo.cuenta,
-          importe: fijo.importe,
-          concepto: fijo.concepto,
-          categoria: fijo.categoria,
-          fecha: formatDateISO(fechaProgramada),
-          tipo: 'fijo',
-          fijoId: fijo.id,
-          createdAt: Date.now()
-        });
-        fijo.lastAppliedMonth = siguienteYm;
-        siguienteYm = addMonth(siguienteYm);
-        aplicado = true;
-        guard++;
-      } else {
-        break;
-      }
+function fijoEstaVencidoSinConfirmar(f){
+  return proximaFechaFijo(f) <= todayDateObj();
+}
+
+function confirmarFijo(id){
+  const f = state.fijos.find(x => x.id === id);
+  if(!f) return false;
+  const hoy = todayDateObj();
+  let siguienteYm = addMonth(f.lastAppliedMonth);
+  let guard = 0;
+  let aplicados = 0;
+  while(guard < 1200){
+    const fechaProgramada = scheduledDate(siguienteYm, f.dia);
+    if(fechaProgramada <= hoy){
+      state.accounts[f.cuenta].saldo += f.importe;
+      state.movimientos.push({
+        id: uid(),
+        cuenta: f.cuenta,
+        importe: f.importe,
+        concepto: f.concepto,
+        categoria: f.categoria,
+        fecha: formatDateISO(fechaProgramada),
+        tipo: 'fijo',
+        fijoId: f.id,
+        createdAt: Date.now()
+      });
+      f.lastAppliedMonth = siguienteYm;
+      siguienteYm = addMonth(siguienteYm);
+      aplicados++;
+      guard++;
+    } else {
+      break;
     }
-  });
-  if(aplicado) guardarEstado();
-  return aplicado;
+  }
+  if(aplicados > 0) guardarEstado();
+  return aplicados > 0;
+}
+
+function confirmarFijoDesdeLista(id){
+  const f = state.fijos.find(x => x.id === id);
+  if(!f) return;
+  const signo = f.importe >= 0 ? '+' : '';
+  if(!confirm(`¿Confirmas que el banco ya te ha ${f.importe >= 0 ? 'ingresado' : 'cobrado'} "${f.concepto}" (${signo}${formatCurrency(f.importe)})?\n\nSe restará/sumará ya a tu saldo real.`)) return;
+  if(confirmarFijo(id)) render();
 }
 
 function gastosFijosPendientesCiclo(cuenta){
@@ -766,24 +797,45 @@ function renderBarraSemanal(){
   document.getElementById('barra-semanal-texto').textContent = texto;
 }
 
+function contarFijosVencidos(cuenta){
+  const {inicio, fin} = obtenerCicloActual();
+  const inicioISO = formatDateISO(inicio), finISO = formatDateISO(fin);
+  let count = 0;
+  state.fijos.forEach(f => {
+    if(f.cuenta !== cuenta) return;
+    const cobrado = state.movimientos.some(m => m.fijoId === f.id && m.fecha >= inicioISO && m.fecha <= finISO);
+    if(!cobrado && fijoEstaVencidoSinConfirmar(f)) count++;
+  });
+  return count;
+}
+
+function irAFijosVencidos(cuenta){
+  currentAccount = cuenta;
+  currentScreen = 'cuenta';
+  currentTab = 'fijos';
+  render();
+}
+
 function renderInicio(){
   const corr = state.accounts.corriente;
   const ahor = state.accounts.ahorro;
   const pendCorr = gastosFijosPendientesCiclo('corriente');
   const pendAhor = gastosFijosPendientesCiclo('ahorro');
+  const vencidosCorr = contarFijosVencidos('corriente');
+  const vencidosAhor = contarFijosVencidos('ahorro');
 
   document.getElementById('home-corriente-disponible').textContent = formatCurrency(corr.saldo - pendCorr.total);
   document.getElementById('home-corriente-real').textContent = 'Saldo real: ' + formatCurrency(corr.saldo);
   renderBarraSemanal();
-  document.getElementById('home-corriente-pendiente').innerHTML = pendCorr.count > 0
-    ? `<div class="pendiente-line">Pendiente este ciclo: ${formatCurrency(pendCorr.total)} en ${pendCorr.count} gasto${pendCorr.count>1?'s':''} fijo${pendCorr.count>1?'s':''}</div>`
-    : '';
+  document.getElementById('home-corriente-pendiente').innerHTML =
+    (pendCorr.count > 0 ? `<div class="pendiente-line">Pendiente este ciclo: ${formatCurrency(pendCorr.total)} en ${pendCorr.count} gasto${pendCorr.count>1?'s':''} fijo${pendCorr.count>1?'s':''}</div>` : '') +
+    (vencidosCorr > 0 ? `<div class="pendiente-line vencido-aviso" onclick="event.stopPropagation(); irAFijosVencidos('corriente')">⚠️ ${vencidosCorr} fijo${vencidosCorr>1?'s':''} sin confirmar — toca para revisar</div>` : '');
 
   document.getElementById('home-ahorro-disponible').textContent = formatCurrency(ahor.saldo - pendAhor.total);
   document.getElementById('home-ahorro-real').textContent = 'Saldo real: ' + formatCurrency(ahor.saldo);
-  document.getElementById('home-ahorro-pendiente').innerHTML = pendAhor.count > 0
-    ? `<div class="pendiente-line">Pendiente este ciclo: ${formatCurrency(pendAhor.total)} en ${pendAhor.count} gasto${pendAhor.count>1?'s':''} fijo${pendAhor.count>1?'s':''}</div>`
-    : '';
+  document.getElementById('home-ahorro-pendiente').innerHTML =
+    (pendAhor.count > 0 ? `<div class="pendiente-line">Pendiente este ciclo: ${formatCurrency(pendAhor.total)} en ${pendAhor.count} gasto${pendAhor.count>1?'s':''} fijo${pendAhor.count>1?'s':''}</div>` : '') +
+    (vencidosAhor > 0 ? `<div class="pendiente-line vencido-aviso" onclick="event.stopPropagation(); irAFijosVencidos('ahorro')">⚠️ ${vencidosAhor} fijo${vencidosAhor>1?'s':''} sin confirmar — toca para revisar</div>` : '');
 
   const {inicio: inicioCiclo, fin: finCiclo} = obtenerCicloActual();
   document.getElementById('ciclo-rango').textContent = `Del ${formatFecha(formatDateISO(inicioCiclo))} al ${formatFecha(formatDateISO(finCiclo))}`;
@@ -879,12 +931,25 @@ function renderListaFijos(){
   }
   el.innerHTML = fijos.map(f => {
     const cobrado = state.movimientos.some(m => m.fijoId === f.id && m.fecha >= inicioISO && m.fecha <= finISO);
+    const vencido = !cobrado && fijoEstaVencidoSinConfirmar(f);
+    let estadoHtml;
+    if(cobrado){
+      estadoHtml = `<div class="fijo-estado">✓ Cobrado este ciclo</div>`;
+    } else if(vencido){
+      const fechaVencio = formatFecha(formatDateISO(proximaFechaFijo(f)));
+      estadoHtml = `
+        <div class="fijo-estado vencido">⚠️ Venció el ${fechaVencio} — ¿ya te lo han ${f.importe >= 0 ? 'ingresado' : 'cobrado'}?</div>
+        <button type="button" class="btn-confirmar-fijo" onclick="event.stopPropagation(); confirmarFijoDesdeLista('${f.id}')">Sí, confirmar ahora</button>
+      `;
+    } else {
+      estadoHtml = `<div class="fijo-estado">⏳ Pendiente este ciclo</div>`;
+    }
     return `
-    <div class="fijo-item" onclick="abrirSheetEditarFijo('${f.id}')">
+    <div class="fijo-item${vencido ? ' fijo-item-vencido' : ''}" onclick="abrirSheetEditarFijo('${f.id}')">
       <div class="dia-badge">${f.dia}<span>día</span></div>
       <div class="fijo-info">
         <div class="fijo-concepto">${iconoCategoria(f.categoria)} ${escapeHtml(f.concepto)}</div>
-        <div class="fijo-estado">${cobrado ? '✓ Cobrado este ciclo' : '⏳ Pendiente este ciclo'}</div>
+        ${estadoHtml}
       </div>
       <div class="fijo-importe ${f.importe >= 0 ? 'pos' : 'neg'}">${f.importe >= 0 ? '+' : ''}${formatCurrency(f.importe)}</div>
     </div>
@@ -1060,16 +1125,13 @@ function guardarMovimiento(e){
     const programada = scheduledDate(ym, dia);
     const fijo = {
       id: uid(), cuenta: currentAccount, importe: signed, concepto, categoria,
-      dia, lastAppliedMonth: null, creadoEn: todayISO()
+      dia, lastAppliedMonth: previousMonth(ym), creadoEn: todayISO()
     };
-    if(programada <= hoy){
-      const aplicarYa = confirm(`El día ${dia} ya ha pasado este mes.\n\nAceptar = aplicarlo ya este mes\nCancelar = empezar el mes que viene`);
-      fijo.lastAppliedMonth = aplicarYa ? previousMonth(ym) : ym;
-    } else {
-      fijo.lastAppliedMonth = previousMonth(ym);
-    }
     state.fijos.push(fijo);
-    procesarFijos();
+    if(programada <= hoy){
+      const yaCobrado = confirm(`El día ${dia} ya ha pasado este mes.\n\n¿Ya te han ${signed >= 0 ? 'ingresado' : 'cobrado'} "${concepto}" en el banco?\n\nAceptar = sí, ajústalo ya en el saldo real\nCancelar = todavía no (podrás confirmarlo luego en "Mis fijos")`);
+      if(yaCobrado) confirmarFijo(fijo.id);
+    }
   }
 
   guardarEstado();
@@ -1200,7 +1262,6 @@ function importarBackup(event){
       if(!confirm('Esto sustituirá todos tus datos actuales por los del archivo. ¿Continuar?')) return;
       state = data;
       guardarEstado();
-      procesarFijos();
       render();
       alert('Copia de seguridad importada correctamente.');
     } catch(err){
@@ -1280,14 +1341,13 @@ function configurarPWA(){
    ARRANQUE
    ============================================================ */
 function iniciarApp(){
-  procesarFijos();
   document.getElementById('app').classList.remove('hidden');
   render();
 }
 
 document.addEventListener('visibilitychange', () => {
   if(document.visibilityState === 'visible' && state){
-    if(procesarFijos()) render();
+    render();
   }
 });
 

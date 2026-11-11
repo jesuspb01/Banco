@@ -482,8 +482,11 @@ const CATEGORIAS = [
   {id:'suscripciones', nombre:'Suscripciones', icono:'📺'},
   {id:'casa', nombre:'Casa', icono:'🏠'},
   {id:'transporte', nombre:'Transporte', icono:'🚗'},
+  {id:'gasolina', nombre:'Gasolina', icono:'⛽'},
   {id:'salud', nombre:'Salud', icono:'🏥'},
   {id:'nomina', nombre:'Nómina', icono:'💼'},
+  {id:'regalos', nombre:'Regalos', icono:'🎁'},
+  {id:'caprichos', nombre:'Caprichos', icono:'🛍️'},
   {id:'otros', nombre:'Otros', icono:'📦'},
 ];
 function iconoCategoria(id){
@@ -623,21 +626,23 @@ function obtenerPresupuestoSemanal(){
   const hoyISO = todayISO();
 
   // Solo gastos puntuales de Corriente cuentan como "gastado esta semana".
-  // Los fijos ya estaban restados desde el inicio del ciclo y las transferencias se reparten aparte.
+  // Los fijos ya estaban restados desde el inicio del ciclo, y tanto las transferencias
+  // como los gastos de categoría "gasolina" se reparten aparte entre todas las semanas.
   let gastadoEstaSemana = 0;
   state.movimientos.forEach(m => {
     if(m.cuenta !== 'corriente') return;
     if(m.tipo !== 'puntual') return;
     if(m.importe >= 0) return;
+    if(m.categoria === 'gasolina') return;
     if(m.fecha < inicioSemanaISO || m.fecha > hoyISO) return;
     gastadoEstaSemana += Math.abs(m.importe);
   });
 
   const pendCorr = gastosFijosPendientesCiclo('corriente');
   const disponibleHoy = state.accounts.corriente.saldo - pendCorr.total;
-  // Se "devuelve" lo gastado puntual de esta semana al reparto: así una transferencia
-  // reduce el bote y se reparte entre las semanas que quedan, pero un gasto puntual
-  // solo rellena la barra de esta semana, sin encoger el presupuesto de las demás.
+  // Se "devuelve" lo gastado puntual (no-gasolina) de esta semana al reparto: así una
+  // transferencia o un gasto de gasolina reduce el bote y se reparte entre las semanas
+  // que quedan, pero un gasto puntual normal solo rellena la barra de esta semana.
   const bote = disponibleHoy + gastadoEstaSemana;
   const presupuesto = bote / semanasRestantes;
 
